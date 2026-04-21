@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ESP8266 FM Radio</title>
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg: #0f1117;
+            --bg-card: #1a1d27;
+            --bg-display: #0a0c10;
+            --accent: #f59e0b;
+            --accent-glow: rgba(245, 158, 11, 0.3);
+            --text: #e2e8f0;
+            --text-dim: #64748b;
+            --border: #2d3142;
+            --success: #10b981;
+            --danger: #ef4444;
+            --stereo: #06b6d4;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 16px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--accent);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .header .subtitle {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            margin-top: 4px;
+        }
+
+        /* Main Display */
+        .display {
+            background: var(--bg-display);
+            border: 2px solid var(--border);
+            border-radius: 16px;
+            padding: 24px 32px;
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+            position: relative;
+            box-shadow: 
+                inset 0 2px 10px rgba(0,0,0,0.5),
+                0 0 30px var(--accent-glow);
+        }
+
+        .frequency-display {
+            font-size: 4rem;
+            font-weight: 700;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 20px var(--accent-glow), 0 0 40px var(--accent-glow);
+            line-height: 1;
+            letter-spacing: 2px;
+        }
+
+        .frequency-display .mhz {
+            font-size: 1.4rem;
+            color: var(--text-dim);
+            margin-left: 4px;
+            text-shadow: none;
+        }
+
+        .station-name {
+            font-size: 1.1rem;
+            color: var(--text);
+            margin-top: 8px;
+            min-height: 28px;
+            font-weight: 500;
+        }
+
+        .indicators {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 12px;
+        }
+
+        .indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.03);
+            transition: all 0.3s;
+        }
+
+        .indicator.active {
+            background: rgba(6, 182, 212, 0.15);
+            color: var(--stereo);
+        }
+
+        .indicator.active.stereo {
+            box-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
+        }
+
+        .indicator-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            transition: all 0.3s;
+        }
+
+        .indicator.active .indicator-dot {
+            background: var(--stereo);
+            box-shadow: 0 0 6px var(--stereo);
+        }
+
+        /* Signal bars */
+        .signal-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 14px;
+        }
+
+        .signal-bar {
+            width: 3px;
+            background: var(--text-dim);
+            border-radius: 1px;
+            transition: all 0.3s;
+        }
+
+        .signal-bar.active {
+            background: var(--success);
+            box-shadow: 0 0 4px rgba(16, 185, 129, 0.5);
+        }
+
+        /* Controls */
+        .controls {
+            width: 100%;
+            max-width: 420px;
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+        }
+
+        .card-title {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-title svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Tuning */
+        .tuning-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .tune-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 1.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            flex-shrink: 0;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .tune-btn:hover {
+            background: var(--accent);
+            color: var(--bg);
+            border-color: var(--accent);
+        }
+
+        .tune-btn:active {
+            transform: scale(0.92);
+        }
+
+        .slider-container {
+            flex: 1;
+            position: relative;
+        }
+
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: var(--bg);
+            border-radius: 4px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--accent-glow);
+            border: 2px solid var(--bg);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--accent-glow);
+            border: 2px solid var(--bg);
+        }
+
+        /* Buttons Grid */
+        .btn-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.85rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.2s;
+            font-weight: 500;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .btn:hover {
+            background: rgba(245, 158, 11, 0.1);
+            border-color: var(--accent);
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        .btn.active {
+            background: var(--accent);
+            color: var(--bg);
+            border-color: var(--accent);
+        }
+
+        .btn svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .btn-success:hover {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: var(--success);
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: var(--danger);
+        }
+
+        /* Volume */
+        .volume-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .volume-value {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--accent);
+            min-width: 36px;
+            text-align: center;
+        }
+
+        /* Presets */
+        .presets-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .presets-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .presets-list::-webkit-scrollbar-track {
+            background: var(--bg);
+            border-radius: 4px;
+        }
+
+        .presets-list::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        .preset-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            gap: 10px;
+        }
+
+        .preset-item:hover {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.05);
+        }
+
+        .preset-item.active {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.1);
+        }
+
+        .preset-num {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: var(--bg-card);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .preset-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .preset-name {
+            font-size: 0.9rem;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .preset-freq {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .preset-delete {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            border: none;
+            background: transparent;
+            color: var(--text-dim);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+
+        .preset-delete:hover {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+        }
+
+        .empty-presets {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        /* Scan Results */
+        .scan-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-height: 150px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .scan-item {
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .scan-item:hover {
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        .scan-item .scan-freq {
+            color: var(--accent);
+        }
+
+        .scan-item .scan-rssi {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .toast {
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s;
+            pointer-events: none;
+        }
+
+        .toast.success {
+            background: rgba(16, 185, 129, 0.9);
+            color: white;
+        }
+
+        .toast.error {
+            background: rgba(239, 68, 68, 0.9);
+            color: white;
+        }
+
+        .toast.info {
+            background: rgba(245, 158, 11, 0.9);
+            color: var(--bg);
+        }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes toastOut {
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(10px); }
+        }
+
+        /* Modal for preset name */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+
+        .modal-overlay.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            width: 90%;
+            max-width: 320px;
+            transform: scale(0.9);
+            transition: transform 0.2s;
+        }
+
+        .modal-overlay.show .modal {
+            transform: scale(1);
+        }
+
+        .modal h3 {
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+        }
+
+        .modal input {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 1rem;
+            outline: none;
+            margin-bottom: 16px;
+        }
+
+        .modal input:focus {
+            border-color: var(--accent);
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .modal-actions .btn {
+            flex: 1;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .scanning {
+            animation: pulse 1s infinite;
+        }
+
+        /* Footer */
+        .footer {
+            margin-top: auto;
+            padding-top: 20px;
+            text-align: center;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        @media (max-width: 400px) {
+            .frequency-display {
+                font-size: 3rem;
+            }
+            .btn-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>FM Radio</h1>
+        <div class="subtitle">ESP8266 + RDA5807M</div>
+    </div>
+
+    <!-- Main Display -->
+    <div class="display">
+        <div class="frequency-display">
+            <span id="freqValue">87.5</span><span class="mhz">MHz</span>
+        </div>
+        <div class="station-name" id="stationName">Станция не выбрана</div>
+        <div class="indicators">
+            <div class="indicator" id="stereoIndicator">
+                <div class="indicator-dot"></div>
+                <span>STEREO</span>
+            </div>
+            <div class="indicator" id="rssiIndicator">
+                <div class="signal-bars" id="signalBars">
+                    <div class="signal-bar" style="height:4px"></div>
+                    <div class="signal-bar" style="height:7px"></div>
+                    <div class="signal-bar" style="height:10px"></div>
+                    <div class="signal-bar" style="height:13px"></div>
+                </div>
+                <span id="rssiValue">0 dBuV</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <!-- Tuning -->
+        <div class="card">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v4m0 14v4m-7-9H1m22 0h-4m-2.5-6.5L17 5m-10 10l-2.5 2.5M17 17l2.5 2.5M7 7L4.5 4.5"/>
+                </svg>
+                Настройка
+            </div>
+            <div class="tuning-row">
+                <button class="tune-btn" onclick="fineTune(-0.1)" title="-0.1 MHz">−</button>
+                <div class="slider-container">
+                    <div class="slider-labels">
+                        <span>87.5</span>
+                        <span>108.0</span>
+                    </div>
+                    <input type="range" id="freqSlider" min="8750" max="10800" value="8750" oninput="onSliderChange(this.value)">
+                </div>
+                <button class="tune-btn" onclick="fineTune(0.1)" title="+0.1 MHz">+</button>
+            </div>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="card">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                Управление
+            </div>
+            <div class="btn-grid">
+                <button class="btn" onclick="seek(-1)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 12H5m7 7l-7-7 7-7"/>
+                    </svg>
+                    Назад
+                </button>
+                <button class="btn" onclick="seek(1)">
+                    Вперёд
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M5 12h14m-7-7l7 7-7 7"/>
+                    </svg>
+                </button>
+                <button class="btn btn-success" id="scanBtn" onclick="startScan()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    Поиск
+                </button>
+                <button class="btn" id="muteBtn" onclick="toggleMute()">
+                    <svg id="muteIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M15.54 8.46a5 5 0 010 7.07"/>
+                    </svg>
+                    Звук
+                </button>
+                <button class="btn btn-success" onclick="savePreset()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+                        <polyline points="17 21 17 13 7 13 7 21"/>
+                    </svg>
+                    Сохранить
+                </button>
+                <button class="btn btn-danger" onclick="clearAllPresets()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                    </svg>
+                    Очистить
+                </button>
+            </div>
+        </div>
+
+        <!-- Volume -->
+        <div class="card">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                    <path d="M15.54 8.46a5 5 0 010 7.07"/>
+                </svg>
+                Громкость
+            </div>
+            <div class="volume-row">
+                <button class="tune-btn" onclick="changeVolume(-1)" style="width:36px;height:36px;font-size:1.2rem">−</button>
+                <input type="range" id="volumeSlider" min="0" max="15" value="8" oninput="setVolume(this.value)" style="flex:1">
+                <button class="tune-btn" onclick="changeVolume(1)" style="width:36px;height:36px;font-size:1.2rem">+</button>
+                <div class="volume-value" id="volumeValue">8</div>
+            </div>
+        </div>
+
+        <!-- Presets -->
+        <div class="card">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>
+                </svg>
+                Пресеты
+            </div>
+            <div class="presets-list" id="presetsList">
+                <div class="empty-presets">Нет сохранённых станций</div>
+            </div>
+        </div>
+
+        <!-- Scan Results -->
+        <div class="card" id="scanCard" style="display:none">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                Найденные станции
+            </div>
+            <div class="scan-list" id="scanList"></div>
+        </div>
+    </div>
+
+    <div class="footer">
+        ESP8266 FM Radio Controller v1.0
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal">
+            <h3>Сохранить станцию</h3>
+            <input type="text" id="presetNameInput" placeholder="Название станции" maxlength="20">
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">Отмена</button>
+                <button class="btn active" onclick="confirmSavePreset()">Сохранить</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============== API ==============
+        const API = '';
+
+        let state = {
+            frequency: 8750,
+            volume: 8,
+            muted: false,
+            stereo: false,
+            rssi: 0,
+            presets: [],
+            scanning: false
+        };
+
+        // ============== INIT ==============
+        document.addEventListener('DOMContentLoaded', () => {
+            loadState();
+            updateUI();
+            pollStatus();
+            setInterval(pollStatus, 2000);
+        });
+
+        // ============== API CALLS ==============
+        async function apiPost(endpoint, data) {
+            try {
+                const res = await fetch(API + endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return await res.json();
+            } catch (e) {
+                showToast('Ошибка: ' + e.message, 'error');
+                throw e;
+            }
+        }
+
+        async function apiGet(endpoint) {
+            try {
+                const res = await fetch(API + endpoint);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return await res.json();
+            } catch (e) {
+                showToast('Ошибка: ' + e.message, 'error');
+                throw e;
+            }
+        }
+
+        // ============== POLLING ==============
+        async function pollStatus() {
+            try {
+                const data = await apiGet('/api/status');
+                state.frequency = data.frequency || state.frequency;
+                state.volume = data.volume !== undefined ? data.volume : state.volume;
+                state.muted = data.muted || false;
+                state.stereo = data.stereo || false;
+                state.rssi = data.rssi || 0;
+                updateUI();
+            } catch (e) {
+                console.log('Poll error:', e);
+            }
+        }
+
+        // ============== UI UPDATE ==============
+        function updateUI() {
+            const freqMHz = (state.frequency / 100).toFixed(1);
+            document.getElementById('freqValue').textContent = freqMHz;
+            document.getElementById('freqSlider').value = state.frequency;
+            document.getElementById('volumeSlider').value = state.volume;
+            document.getElementById('volumeValue').textContent = state.volume;
+
+            // Stereo
+            const stereoEl = document.getElementById('stereoIndicator');
+            stereoEl.classList.toggle('active', state.stereo);
+            stereoEl.classList.toggle('stereo', state.stereo);
+
+            // RSSI
+            document.getElementById('rssiValue').textContent = (state.rssi || 0) + ' dBuV';
+            const bars = document.querySelectorAll('.signal-bar');
+            const signalLevel = Math.min(4, Math.max(0, Math.floor((state.rssi || 0) / 15)));
+            bars.forEach((bar, i) => bar.classList.toggle('active', i < signalLevel));
+
+            // Mute button
+            const muteBtn = document.getElementById('muteBtn');
+            muteBtn.classList.toggle('active', state.muted);
+
+            // Presets
+            renderPresets();
+        }
+
+        function renderPresets() {
+            const list = document.getElementById('presetsList');
+            if (!state.presets || state.presets.length === 0) {
+                list.innerHTML = '<div class="empty-presets">Нет сохранённых станций</div>';
+                return;
+            }
+            list.innerHTML = state.presets.map((p, i) => {
+                const isActive = Math.abs(p.frequency - state.frequency) < 5;
+                return `<div class="preset-item ${isActive ? 'active' : ''}" onclick="loadPreset(${i})">
+                    <div class="preset-num">${i + 1}</div>
+                    <div class="preset-info">
+                        <div class="preset-name">${escapeHtml(p.name)}</div>
+                        <div class="preset-freq">${(p.frequency / 100).toFixed(1)} MHz</div>
+                    </div>
+                    <button class="preset-delete" onclick="event.stopPropagation(); deletePreset(${i})">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>`;
+            }).join('');
+        }
+
+        // ============== ACTIONS ==============
+        async function onSliderChange(val) {
+            state.frequency = parseInt(val);
+            updateUI();
+            try {
+                await apiPost('/api/tune', { frequency: state.frequency });
+            } catch (e) {}
+        }
+
+        async function fineTune(delta) {
+            state.frequency = Math.max(8750, Math.min(10800, state.frequency + Math.round(delta * 10)));
+            updateUI();
+            try {
+                await apiPost('/api/tune', { frequency: state.frequency });
+            } catch (e) {}
+        }
+
+        async function seek(direction) {
+            try {
+                const data = await apiPost('/api/seek', { direction: direction > 0 ? 'up' : 'down' });
+                if (data.frequency) {
+                    state.frequency = data.frequency;
+                    updateUI();
+                    showToast('Найдена станция: ' + (data.frequency / 100).toFixed(1) + ' MHz', 'success');
+                }
+            } catch (e) {}
+        }
+
+        async function setVolume(val) {
+            state.volume = parseInt(val);
+            updateUI();
+            try {
+                await apiPost('/api/volume', { volume: state.volume });
+            } catch (e) {}
+        }
+
+        async function changeVolume(delta) {
+            const newVol = Math.max(0, Math.min(15, state.volume + delta));
+            await setVolume(newVol);
+        }
+
+        async function toggleMute() {
+            try {
+                const data = await apiPost('/api/mute', { muted: !state.muted });
+                state.muted = data.muted;
+                updateUI();
+                showToast(state.muted ? 'Звук выключен' : 'Звук включён', 'info');
+            } catch (e) {}
+        }
+
+        // ============== SCAN ==============
+        async function startScan() {
+            if (state.scanning) return;
+            state.scanning = true;
+            document.getElementById('scanBtn').classList.add('scanning', 'active');
+            showToast('Поиск станций...', 'info');
+            try {
+                const data = await apiGet('/api/scan');
+                if (data.stations && data.stations.length > 0) {
+                    renderScanResults(data.stations);
+                    showToast('Найдено станций: ' + data.stations.length, 'success');
+                } else {
+                    showToast('Станции не найдены', 'error');
+                }
+            } catch (e) {
+                showToast('Ошибка поиска', 'error');
+            } finally {
+                state.scanning = false;
+                document.getElementById('scanBtn').classList.remove('scanning', 'active');
+            }
+        }
+
+        function renderScanResults(stations) {
+            const card = document.getElementById('scanCard');
+            const list = document.getElementById('scanList');
+            card.style.display = 'block';
+            list.innerHTML = stations.map(s => 
+                `<div class="scan-item" onclick="tuneTo(${s.frequency})">
+                    <span class="scan-freq">${(s.frequency / 100).toFixed(1)}</span>
+                    <span class="scan-rssi">${s.rssi}dB</span>
+                </div>`
+            ).join('');
+        }
+
+        async function tuneTo(freq) {
+            state.frequency = freq;
+            updateUI();
+            try {
+                await apiPost('/api/tune', { frequency: freq });
+            } catch (e) {}
+        }
+
+        // ============== PRESETS ==============
+        let pendingSaveFreq = null;
+
+        function savePreset() {
+            pendingSaveFreq = state.frequency;
+            document.getElementById('presetNameInput').value = '';
+            document.getElementById('modalOverlay').classList.add('show');
+            setTimeout(() => document.getElementById('presetNameInput').focus(), 100);
+        }
+
+        function closeModal() {
+            document.getElementById('modalOverlay').classList.remove('show');
+            pendingSaveFreq = null;
+        }
+
+        async function confirmSavePreset() {
+            const name = document.getElementById('presetNameInput').value.trim();
+            if (!name) {
+                showToast('Введите название', 'error');
+                return;
+            }
+            if (state.presets.length >= 20) {
+                showToast('Максимум 20 пресетов', 'error');
+                closeModal();
+                return;
+            }
+            state.presets.push({ name, frequency: pendingSaveFreq || state.frequency });
+            saveState();
+            renderPresets();
+            closeModal();
+            showToast('Станция сохранена', 'success');
+        }
+
+        function loadPreset(index) {
+            const p = state.presets[index];
+            if (p) {
+                tuneTo(p.frequency);
+                showToast(p.name + ' — ' + (p.frequency / 100).toFixed(1) + ' MHz', 'info');
+            }
+        }
+
+        function deletePreset(index) {
+            state.presets.splice(index, 1);
+            saveState();
+            renderPresets();
+            showToast('Пресет удалён', 'info');
+        }
+
+        function clearAllPresets() {
+            if (!state.presets.length) return;
+            if (confirm('Удалить все пресеты?')) {
+                state.presets = [];
+                saveState();
+                renderPresets();
+                showToast('Все пресеты удалены', 'info');
+            }
+        }
+
+        // ============== STORAGE ==============
+        function loadState() {
+            try {
+                const saved = localStorage.getItem('fm_radio_state');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    state.presets = parsed.presets || [];
+                    if (parsed.volume !== undefined) state.volume = parsed.volume;
+                }
+            } catch (e) {}
+        }
+
+        function saveState() {
+            try {
+                localStorage.setItem('fm_radio_state', JSON.stringify({
+                    presets: state.presets,
+                    volume: state.volume
+                }));
+            } catch (e) {}
+        }
+
+        // ============== UTILS ==============
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Modal close on overlay click
+        document.getElementById('modalOverlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeModal();
+        });
+
+        // Enter key in modal
+        document.getElementById('presetNameInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') confirmSavePreset();
+            if (e.key === 'Escape') closeModal();
+        });
+    </script>
+</body>
+</html>
