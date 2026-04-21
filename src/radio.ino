@@ -41,9 +41,11 @@
 
 // EEPROM settings
 #define EEPROM_SIZE 512
+#define EEPROM_SETTINGS_ADDR 0
 #define EEPROM_PRESETS_ADDR 64
 #define MAX_PRESETS 20
 #define PRESET_MAGIC 0x5244  // "RD" signature
+#define SETTINGS_MAGIC 0x5353  // "SS" signature for settings
 
 // ============ GLOBALS ============
 RDA5807 rx;
@@ -58,8 +60,37 @@ Preset presets[MAX_PRESETS];
 int presetCount = 0;
 bool isMuted = false;
 int currentVolume = 1;
+uint16_t currentFrequency = 8750;  // Default 87.5 MHz
 
 // ============ EEPROM ============
+void loadSettings() {
+  uint16_t magic;
+  EEPROM.get(EEPROM_SETTINGS_ADDR, magic);
+  if (magic != SETTINGS_MAGIC) {
+    // No valid settings found, use defaults
+    currentFrequency = 8750;
+    currentVolume = 1;
+    return;
+  }
+  EEPROM.get(EEPROM_SETTINGS_ADDR + 2, currentFrequency);
+  EEPROM.get(EEPROM_SETTINGS_ADDR + 4, currentVolume);
+  
+  // Validate loaded values
+  if (currentFrequency < 8750 || currentFrequency > 10800) {
+    currentFrequency = 8750;
+  }
+  if (currentVolume < 0 || currentVolume > 15) {
+    currentVolume = 1;
+  }
+}
+
+void saveSettings() {
+  EEPROM.put(EEPROM_SETTINGS_ADDR, SETTINGS_MAGIC);
+  EEPROM.put(EEPROM_SETTINGS_ADDR + 2, currentFrequency);
+  EEPROM.put(EEPROM_SETTINGS_ADDR + 4, currentVolume);
+  EEPROM.commit();
+}
+
 void loadPresets() {
   uint16_t magic;
   EEPROM.get(EEPROM_PRESETS_ADDR, magic);
@@ -124,8 +155,10 @@ void handleTune() {
   
   uint16_t freq = doc["frequency"] | 0;
   if (freq >= 8750 && freq <= 10800) {
+    currentFrequency = freq;
     rx.setFrequency(freq);
     delay(50);
+    saveSettings();
   }
   
   StaticJsonDocument<128> resp;
@@ -152,8 +185,11 @@ void handleSeek() {
   rx.setSeekThreshold(8);
   rx.seek(RDA_SEEK_WRAP, seekUp ? RDA_SEEK_UP : RDA_SEEK_DOWN);
   
+  currentFrequency = rx.getFrequency();
+  saveSettings();
+  
   StaticJsonDocument<128> resp;
-  resp["frequency"] = rx.getFrequency();
+  resp["frequency"] = currentFrequency;
   resp["rssi"] = rx.getRssi();
   resp["stereo"] = rx.isStereo();
   
@@ -175,6 +211,7 @@ void handleVolume() {
   if (vol >= 0 && vol <= 15) {
     currentVolume = vol;
     rx.setVolume(vol);
+    saveSettings();
   }
   
   StaticJsonDocument<64> resp;
@@ -345,6 +382,7 @@ void setup() {
   
   // Init EEPROM
   EEPROM.begin(EEPROM_SIZE);
+  loadSettings();
   loadPresets();
   if (!LittleFS.begin()) {
     Serial.println("LittleFS mount failed");
@@ -356,7 +394,7 @@ void setup() {
   // Init RDA5807
   rx.setup();
   rx.setVolume(currentVolume);
-  rx.setFrequency(8750);  // Start at 87.5 MHz
+  rx.setFrequency(currentFrequency);  // Use saved frequency
   rx.setMono(false);       // Enable stereo
   rx.setBass(true);        // Enable bass boost
   rx.setMute(false);
