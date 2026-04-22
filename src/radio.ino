@@ -2,10 +2,14 @@
   ESP8266 FM Radio Controller
   Hardware: NodeMCU ESP8266 + RDA5807M FM Module
   Wiring:
-    D1 (GPIO5) -> SDA
-    D2 (GPIO4) -> SCL
+    D1 (GPIO5) -> SDA (I2C)
+    D2 (GPIO4) -> SCL (I2C)
     3.3V       -> VCC
     GND        -> GND
+  
+  Display Options (I2C shared bus):
+    - LCD 1602 I2C (Blue): Default address 0x27
+    - OLED 1.3" 128x64 I2C (SH1106): Default address 0x3C
   
   Required libraries:
     - RDA5807 by Ricardo Lima Caratti (pu2clr)
@@ -13,6 +17,9 @@
     - ESP8266WebServer
     - ArduinoJson
     - EEPROM
+    - LiquidCrystal_I2C (for LCD 1602)
+    - Adafruit SSD1306 (for OLED)
+    - Adafruit GFX Library (for OLED)
 */
 
 #include <Wire.h>
@@ -22,6 +29,9 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <LittleFS.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // ============ CONFIGURATION ============
 // WiFi mode: true = AP mode, false = STA mode (connect to existing network)
@@ -39,6 +49,23 @@
 #define I2C_SDA D2  // GPIO5
 #define I2C_SCL D1  // GPIO4
 
+// Display type selection
+// Set to 0: No display
+// Set to 1: LCD 1602 I2C (Blue)
+// Set to 2: OLED 1.3" 128x64 I2C (SH1106)
+#define DISPLAY_TYPE 2
+
+// LCD 1602 I2C configuration
+#define LCD_ADDRESS 0x27
+#define LCD_COLS 16
+#define LCD_ROWS 2
+
+// OLED 1.3" 128x64 I2C configuration
+#define OLED_ADDRESS 0x3C
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1  // Reset pin (-1 if sharing Arduino reset pin)
+
 // EEPROM settings
 #define EEPROM_SIZE 512
 #define EEPROM_SETTINGS_ADDR 0
@@ -50,6 +77,17 @@
 // ============ GLOBALS ============
 RDA5807 rx;
 ESP8266WebServer server(80);
+
+// Display objects
+#if DISPLAY_TYPE == 1
+LiquidCrystal_I2C lcd(LCD_ADDRESS, LCD_COLS, LCD_ROWS);
+#elif DISPLAY_TYPE == 2
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#endif
+
+// Display update timer
+unsigned long lastDisplayUpdate = 0;
+const unsigned long displayUpdateInterval = 500;  // Update display every 500ms
 
 struct Preset {
   char name[21];
@@ -372,6 +410,125 @@ void handleRoot() {
   file.close();
 }
 
+// ============ DISPLAY FUNCTIONS ============
+void initDisplay() {
+#if DISPLAY_TYPE == 1
+  // Initialize LCD 1602 I2C
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("FM Radio");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+  delay(1000);
+  Serial.println("LCD 1602 I2C initialized");
+  
+#elif DISPLAY_TYPE == 2
+  // Initialize OLED 1.3" 128x64 I2C (SH1106)
+  if(!display.begin(OLED_ADDRESS, false)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("FM Radio");
+  display.println("Initializing...");
+  display.display();
+  delay(1000);
+  Serial.println("OLED 1.3\" 128x64 I2C initialized");
+  
+#else
+  Serial.println("No display configured");
+#endif
+}
+
+void updateDisplay() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastDisplayUpdate < displayUpdateInterval) {
+    return;
+  }
+  lastDisplayUpdate = currentMillis;
+  
+#if DISPLAY_TYPE == 1
+  // Update LCD 1602
+  lcd.clear();
+  
+  // Line 1: Frequency
+  lcd.setCursor(0, 0);
+  float freqMHz = currentFrequency / 100.0;
+  lcd.print(freqMHz, 1);
+  lcd.print(" MHz");
+  
+  // Line 2: Volume and status
+  lcd.setCursor(0, 1);
+  lcd.print("Vol:");
+  lcd.print(currentVolume);
+  if (isMuted) {
+    lcd.print(" M");
+  } else {
+    lcd.print(" ");
+  }
+  if (rx.isStereo()) {
+    lcd.print("ST");
+  } else {
+    lcd.print("MO");
+  }
+  
+#elif DISPLAY_TYPE == 2
+  // Update OLED 1.3" 128x64
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Frequency - large text at top
+  display.setCursor(10, 5);
+  float freqMHz = currentFrequency / 100.0;
+  display.print(freqMHz, 1);
+  display.println(" MHz");
+  
+  // Signal strength bar
+  display.setTextSize(1);
+  display.setCursor(0, 30);
+  display.print("Signal: ");
+  uint8_t rssi = rx.getRssi();
+  display.print(rssi);
+  display.print("/25");
+  
+  // Draw signal bar
+  int barWidth = map(rssi, 0, 25, 0, 60);
+  display.fillRect(60, 30, barWidth, 8, SSD1306_WHITE);
+  
+  // Volume and mute status
+  display.setCursor(0, 42);
+  display.print("Volume: ");
+  display.print(currentVolume);
+  display.print("/15");
+  
+  // Stereo/Mono indicator
+  display.setCursor(0, 54);
+  if (isMuted) {
+    display.print("MUTED");
+  } else {
+    if (rx.isStereo()) {
+      display.print("STEREO");
+    } else {
+      display.print("MONO");
+    }
+  }
+  
+  // WiFi status indicator (small)
+  if (WiFi.status() == WL_CONNECTED) {
+    display.fillCircle(120, 60, 3, SSD1306_WHITE);
+  }
+  
+  display.display();
+  
+#endif
+}
+
 // ============ SETUP & LOOP ============
 void setup() {
   Serial.begin(115200);
@@ -401,6 +558,9 @@ void setup() {
   
   Serial.print("RDA5807M detected: ");
   Serial.println(rx.getDeviceId() != 0 ? "YES" : "NO");
+  
+  // Init Display
+  initDisplay();
   
   // WiFi setup
 #if WIFI_AP_MODE
@@ -449,5 +609,6 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  updateDisplay();
   delay(2);
 }
