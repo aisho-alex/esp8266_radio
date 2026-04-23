@@ -34,16 +34,14 @@
 #include <Adafruit_SSD1306.h>
 
 // ============ CONFIGURATION ============
-// WiFi mode: true = AP mode, false = STA mode (connect to existing network)
-#define WIFI_AP_MODE true
-
-// STA mode credentials (ignored if AP mode)
-#define WIFI_SSID "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-
-// AP mode settings
+// AP mode settings (fallback when STA connection fails)
 #define AP_SSID "FM-Radio"
 #define AP_PASSWORD "12345678"  // min 8 chars, or empty for open network
+#define AP_CHANNEL 1
+
+// WiFi connection settings
+#define WIFI_CONNECT_TIMEOUT 10000  // 10 seconds
+#define WIFI_CONNECT_RETRIES 3
 
 // RDA5807M I2C pins
 #define I2C_SDA D2  // GPIO5
@@ -70,9 +68,13 @@
 #define EEPROM_SIZE 512
 #define EEPROM_SETTINGS_ADDR 0
 #define EEPROM_PRESETS_ADDR 64
+#define EEPROM_WIFI_ADDR 256
 #define MAX_PRESETS 20
 #define PRESET_MAGIC 0x5244  // "RD" signature
 #define SETTINGS_MAGIC 0x5353  // "SS" signature for settings
+#define WIFI_MAGIC 0x5746  // "WF" signature for WiFi settings
+#define WIFI_SSID_MAX_LEN 32
+#define WIFI_PASSWORD_MAX_LEN 63
 
 // ============ GLOBALS ============
 RDA5807 rx;
@@ -99,6 +101,14 @@ int presetCount = 0;
 bool isMuted = false;
 int currentVolume = 1;
 uint16_t currentFrequency = 8750;  // Default 87.5 MHz
+
+// WiFi settings
+char wifiSSID[WIFI_SSID_MAX_LEN + 1] = "";
+char wifiPassword[WIFI_PASSWORD_MAX_LEN + 1] = "";
+bool wifiConfigured = false;
+bool wifiConnected = false;
+unsigned long lastWiFiCheck = 0;
+const unsigned long wifiCheckInterval = 30000;  // Check WiFi every 30 seconds
 
 // ============ EEPROM ============
 void loadSettings() {
@@ -153,6 +163,81 @@ void savePresets() {
     EEPROM.put(EEPROM_PRESETS_ADDR + 4 + i * sizeof(Preset), presets[i]);
   }
   EEPROM.commit();
+}
+
+// ============ WIFI EEPROM ============
+void loadWiFiSettings() {
+  uint16_t magic;
+  EEPROM.get(EEPROM_WIFI_ADDR, magic);
+  if (magic != WIFI_MAGIC) {
+    // No valid WiFi settings found
+    wifiConfigured = false;
+    wifiSSID[0] = '\0';
+    wifiPassword[0] = '\0';
+    return;
+  }
+  
+  uint8_t ssidLen;
+  EEPROM.get(EEPROM_WIFI_ADDR + 2, ssidLen);
+  if (ssidLen > WIFI_SSID_MAX_LEN) ssidLen = WIFI_SSID_MAX_LEN;
+  
+  // Read SSID byte by byte
+  for (int i = 0; i < ssidLen; i++) {
+    EEPROM.get(EEPROM_WIFI_ADDR + 3 + i, wifiSSID[i]);
+  }
+  wifiSSID[ssidLen] = '\0';
+  
+  uint8_t passLen;
+  EEPROM.get(EEPROM_WIFI_ADDR + 3 + WIFI_SSID_MAX_LEN + 1, passLen);
+  if (passLen > WIFI_PASSWORD_MAX_LEN) passLen = WIFI_PASSWORD_MAX_LEN;
+  
+  // Read password byte by byte
+  for (int i = 0; i < passLen; i++) {
+    EEPROM.get(EEPROM_WIFI_ADDR + 4 + WIFI_SSID_MAX_LEN + 1 + i, wifiPassword[i]);
+  }
+  wifiPassword[passLen] = '\0';
+  
+  wifiConfigured = (ssidLen > 0);
+}
+
+void saveWiFiSettings(const char* ssid, const char* password) {
+  uint8_t ssidLen = strlen(ssid);
+  if (ssidLen > WIFI_SSID_MAX_LEN) ssidLen = WIFI_SSID_MAX_LEN;
+  
+  uint8_t passLen = strlen(password);
+  if (passLen > WIFI_PASSWORD_MAX_LEN) passLen = WIFI_PASSWORD_MAX_LEN;
+  
+  EEPROM.put(EEPROM_WIFI_ADDR, WIFI_MAGIC);
+  EEPROM.put(EEPROM_WIFI_ADDR + 2, ssidLen);
+  
+  // Write SSID byte by byte
+  for (int i = 0; i < ssidLen; i++) {
+    EEPROM.put(EEPROM_WIFI_ADDR + 3 + i, ssid[i]);
+  }
+  
+  EEPROM.put(EEPROM_WIFI_ADDR + 3 + WIFI_SSID_MAX_LEN + 1, passLen);
+  
+  // Write password byte by byte
+  for (int i = 0; i < passLen; i++) {
+    EEPROM.put(EEPROM_WIFI_ADDR + 4 + WIFI_SSID_MAX_LEN + 1 + i, password[i]);
+  }
+  
+  EEPROM.commit();
+  
+  // Update runtime variables
+  strncpy(wifiSSID, ssid, WIFI_SSID_MAX_LEN);
+  wifiSSID[WIFI_SSID_MAX_LEN] = '\0';
+  strncpy(wifiPassword, password, WIFI_PASSWORD_MAX_LEN);
+  wifiPassword[WIFI_PASSWORD_MAX_LEN] = '\0';
+  wifiConfigured = true;
+}
+
+void clearWiFiSettings() {
+  EEPROM.put(EEPROM_WIFI_ADDR, 0xFFFF);  // Invalid magic
+  EEPROM.commit();
+  wifiSSID[0] = '\0';
+  wifiPassword[0] = '\0';
+  wifiConfigured = false;
 }
 
 // ============ CORS ============
@@ -399,6 +484,95 @@ void handleNotFound() {
   server.send(404, "application/json", "{\"error\":\"Not found\"}");
 }
 
+// ============ WIFI API HANDLERS ============
+void handleWiFiStatus() {
+  setCORS();
+  StaticJsonDocument<256> doc;
+  
+  if (WiFi.getMode() == WIFI_AP) {
+    doc["mode"] = "AP";
+    doc["ap_ssid"] = AP_SSID;
+    doc["ap_ip"] = WiFi.softAPIP().toString();
+    doc["connected"] = false;
+  } else {
+    doc["mode"] = "STA";
+    doc["sta_ssid"] = wifiSSID;
+    doc["sta_ip"] = WiFi.localIP().toString();
+    doc["connected"] = (WiFi.status() == WL_CONNECTED);
+  }
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleWiFiScan() {
+  setCORS();
+  StaticJsonDocument<1024> doc;
+  JsonArray networks = doc.createNestedArray("networks");
+  
+  Serial.println("Scanning for networks...");
+  int n = WiFi.scanNetworks();
+  
+  for (int i = 0; i < n; i++) {
+    JsonObject net = networks.createNestedObject();
+    net["ssid"] = WiFi.SSID(i);
+    net["rssi"] = WiFi.RSSI(i);
+    net["encryption"] = WiFi.encryptionType(i) != ENC_TYPE_NONE;
+    net["channel"] = WiFi.channel(i);
+  }
+  
+  WiFi.scanDelete();
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleWiFiSave() {
+  setCORS();
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  if (error) {
+    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
+  
+  const char* ssid = doc["ssid"];
+  const char* password = doc["password"];
+  
+  if (!ssid || strlen(ssid) == 0) {
+    server.send(400, "application/json", "{\"error\":\"SSID is required\"}");
+    return;
+  }
+  
+  // Save to EEPROM
+  saveWiFiSettings(ssid, password);
+  
+  StaticJsonDocument<128> resp;
+  resp["success"] = true;
+  resp["message"] = "Settings saved. Reconnecting...";
+  
+  String response;
+  serializeJson(resp, response);
+  server.send(200, "application/json", response);
+  
+  // Schedule reconnect after response is sent
+  delay(100);
+  reconnectWiFi();
+}
+
+void handleWiFiConfig() {
+  File file = LittleFS.open("/wifi.html", "r");
+  if (!file) {
+    server.send(500, "text/plain", "Failed to open wifi.html");
+    return;
+  }
+  server.streamFile(file, "text/html");
+  file.close();
+}
+
 
 void handleRoot() {
   File file = LittleFS.open("/index.html", "r");
@@ -525,8 +699,80 @@ void updateDisplay() {
   }
   
   display.display();
-  
 #endif
+}
+
+// ============ WIFI FUNCTIONS ============
+bool connectToWiFi() {
+  if (!wifiConfigured || strlen(wifiSSID) == 0) {
+    return false;
+  }
+  
+  Serial.println("Connecting to WiFi...");
+  Serial.print("SSID: ");
+  Serial.println(wifiSSID);
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSSID, wifiPassword);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < WIFI_CONNECT_RETRIES) {
+    delay(WIFI_CONNECT_TIMEOUT / WIFI_CONNECT_RETRIES);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Connected! IP: ");
+    Serial.println(WiFi.localIP());
+    wifiConnected = true;
+    return true;
+  } else {
+    Serial.println();
+    Serial.println("Failed to connect to WiFi");
+    wifiConnected = false;
+    return false;
+  }
+}
+
+void startAPMode() {
+  Serial.println("Starting AP mode...");
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL);
+  Serial.print("AP SSID: ");
+  Serial.println(AP_SSID);
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
+  wifiConnected = false;
+}
+
+void reconnectWiFi() {
+  if (wifiConfigured && strlen(wifiSSID) > 0) {
+    Serial.println("Attempting WiFi reconnection...");
+    if (connectToWiFi()) {
+      // Successfully connected in STA mode
+    } else {
+      // Fall back to AP mode
+      startAPMode();
+    }
+  } else {
+    // No WiFi config, start AP mode
+    startAPMode();
+  }
+}
+
+void checkWiFiConnection() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastWiFiCheck < wifiCheckInterval) {
+    return;
+  }
+  lastWiFiCheck = currentMillis;
+  
+  if (WiFi.getMode() == WIFI_STA && WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection lost, attempting to reconnect...");
+    reconnectWiFi();
+  }
 }
 
 // ============ SETUP & LOOP ============
@@ -562,30 +808,79 @@ void setup() {
   // Init Display
   initDisplay();
   
-  // WiFi setup
-#if WIFI_AP_MODE
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.println("AP Mode");
-  Serial.print("SSID: ");
-  Serial.println(AP_SSID);
-  Serial.print("IP: ");
-  Serial.println(WiFi.softAPIP());
-#else
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // Load WiFi settings from EEPROM
+  loadWiFiSettings();
+  
+  // WiFi setup - try STA mode first, fall back to AP
+  if (wifiConfigured && strlen(wifiSSID) > 0) {
+    if (!connectToWiFi()) {
+      startAPMode();
+    }
+  } else {
+    startAPMode();
   }
-  Serial.println();
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
-#endif
+  
+  // Display IP address on startup
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Connected! IP: ");
+    Serial.println(WiFi.localIP());
+    
+    // Show IP on display for a few seconds
+    #if DISPLAY_TYPE == 2
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("WiFi Connected");
+    display.println();
+    display.println("IP Address:");
+    display.setTextSize(2);
+    display.println(WiFi.localIP().toString());
+    display.display();
+    delay(3000);
+    #elif DISPLAY_TYPE == 1
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Connected");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP().toString());
+    delay(3000);
+    #endif
+  } else {
+    Serial.print("AP Mode - IP: ");
+    Serial.println(WiFi.softAPIP());
+    
+    // Show AP info on display
+    #if DISPLAY_TYPE == 2
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("AP Mode");
+    display.println();
+    display.println("SSID:");
+    display.setTextSize(2);
+    display.println(AP_SSID);
+    display.setTextSize(1);
+    display.println();
+    display.print("IP: ");
+    display.println(WiFi.softAPIP().toString());
+    display.display();
+    delay(3000);
+    #elif DISPLAY_TYPE == 1
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("AP Mode:");
+    lcd.print(AP_SSID);
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.softAPIP().toString());
+    delay(3000);
+    #endif
+  }
   
   // Web server routes
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/wifi", HTTP_GET, handleWiFiConfig);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/tune", HTTP_POST, handleTune);
   server.on("/api/seek", HTTP_POST, handleSeek);
@@ -596,6 +891,11 @@ void setup() {
   server.on("/api/presets", HTTP_POST, handleAddPreset);
   server.on("/api/presets/", HTTP_POST, handleAddPreset);
   server.on("/api/presets/{}", HTTP_DELETE, handleDeletePreset);
+  
+  // WiFi API routes
+  server.on("/api/wifi/status", HTTP_GET, handleWiFiStatus);
+  server.on("/api/wifi/scan", HTTP_GET, handleWiFiScan);
+  server.on("/api/wifi/save", HTTP_POST, handleWiFiSave);
   
   server.onNotFound(handleNotFound);
   
@@ -610,5 +910,6 @@ void setup() {
 void loop() {
   server.handleClient();
   updateDisplay();
+  checkWiFiConnection();
   delay(2);
 }

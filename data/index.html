@@ -599,6 +599,36 @@
             animation: pulse 1s infinite;
         }
 
+        /* WiFi Link */
+        .wifi-link {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 10px;
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid var(--border);
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .wifi-link:hover {
+            background: rgba(245, 158, 11, 0.2);
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+
+        .wifi-link svg {
+            width: 16px;
+            height: 16px;
+        }
+
         /* Footer */
         .footer {
             margin-top: auto;
@@ -622,6 +652,15 @@
     <div class="header">
         <h1>FM Radio</h1>
         <div class="subtitle">ESP8266 + RDA5807M</div>
+        <a href="/wifi" class="wifi-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+                <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                <line x1="12" y1="20" x2="12.01" y2="20"/>
+            </svg>
+            WiFi
+        </a>
     </div>
 
     <!-- Main Display -->
