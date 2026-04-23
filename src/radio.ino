@@ -24,6 +24,7 @@
 
 #include <Wire.h>
 #include <RDA5807.h>
+#include <ESP8266HTTPUpdateServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoJson.h>
@@ -76,9 +77,14 @@
 #define WIFI_SSID_MAX_LEN 32
 #define WIFI_PASSWORD_MAX_LEN 63
 
+// EEPROM settings for OTA rollback
+#define EEPROM_OTA_ADDR 384
+#define OTA_MAGIC 0x4F54  // "OT" signature for OTA status
+
 // ============ GLOBALS ============
 RDA5807 rx;
 ESP8266WebServer server(80);
+ESP8266HTTPUpdateServer httpUpdater(false);
 
 // Display objects
 #if DISPLAY_TYPE == 1
@@ -109,6 +115,15 @@ bool wifiConfigured = false;
 bool wifiConnected = false;
 unsigned long lastWiFiCheck = 0;
 const unsigned long wifiCheckInterval = 30000;  // Check WiFi every 30 seconds
+
+const char* otaUsername = "admin";
+const char* otaPassword = "ota";
+
+// OTA status variables
+bool otaInProgress = false;
+int otaProgress = 0;
+String otaStatus = "";
+bool otaError = false;
 
 // ============ EEPROM ============
 void loadSettings() {
@@ -238,6 +253,165 @@ void clearWiFiSettings() {
   wifiSSID[0] = '\0';
   wifiPassword[0] = '\0';
   wifiConfigured = false;
+}
+
+// ============ OTA ROLLBACK ============
+void saveOTAStatus(bool success) {
+  EEPROM.put(EEPROM_OTA_ADDR, OTA_MAGIC);
+  EEPROM.put(EEPROM_OTA_ADDR + 2, success ? 1 : 0);
+  EEPROM.commit();
+}
+
+bool checkOTARollback() {
+  uint16_t magic;
+  EEPROM.get(EEPROM_OTA_ADDR, magic);
+  if (magic != OTA_MAGIC) {
+    return false;  // No OTA status saved
+  }
+  
+  uint8_t status;
+  EEPROM.get(EEPROM_OTA_ADDR + 2, status);
+  return (status == 0);  // Return true if OTA failed (rollback needed)
+}
+
+void clearOTAStatus() {
+  EEPROM.put(EEPROM_OTA_ADDR, 0xFFFF);  // Invalid magic
+  EEPROM.commit();
+}
+
+// ============ OTA DISPLAY ============
+void showOTAStatus(const String& status, int progress = -1, bool isError = false) {
+#if DISPLAY_TYPE == 1
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("OTA");
+  lcd.setCursor(0, 1);
+  if (isError) {
+    lcd.print("Error!");
+  } else if (progress >= 0) {
+    lcd.print(progress);
+    lcd.print("%");
+  } else {
+    lcd.print(status);
+  }
+  
+#elif DISPLAY_TYPE == 2
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  
+  display.setCursor(0, 0);
+  display.println("OTA Update");
+  
+  display.setTextSize(3);
+  display.setCursor(20, 25);
+  
+  if (isError) {
+    display.println("ERROR");
+    display.setTextSize(1);
+    display.setCursor(0, 55);
+    display.print(status);
+  } else if (progress >= 0) {
+    display.print(progress);
+    display.println("%");
+    
+    // Progress bar
+    display.setTextSize(1);
+    display.setCursor(0, 55);
+    display.print(status);
+    
+    int barWidth = map(progress, 0, 100, 0, 128);
+    display.fillRect(0, 45, barWidth, 5, SSD1306_WHITE);
+  } else {
+    display.setTextSize(1);
+    display.setCursor(0, 25);
+    display.println(status);
+  }
+  
+  display.display();
+#endif
+}
+
+// ============ OTA STATUS API ============
+void handleOTAStatus() {
+  setCORS();
+  StaticJsonDocument<128> doc;
+  doc["in_progress"] = otaInProgress;
+  doc["progress"] = otaProgress;
+  doc["status"] = otaStatus;
+  doc["error"] = otaError;
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleOTAPrepare() {
+  setCORS();
+  saveOTAStatus(false);  // Mark as failed until successful completion
+  otaInProgress = true;
+  otaProgress = 0;
+  otaStatus = "Preparing...";
+  otaError = false;
+  showOTAStatus("Preparing...");
+  Serial.println("OTA Update Preparing...");
+  
+  StaticJsonDocument<64> resp;
+  resp["success"] = true;
+  String response;
+  serializeJson(resp, response);
+  server.send(200, "application/json", response);
+}
+
+void handleOTAProgress() {
+  setCORS();
+  StaticJsonDocument<128> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  if (!error && doc.containsKey("progress")) {
+    otaProgress = doc["progress"];
+    otaStatus = "Updating...";
+    showOTAStatus("Updating...", otaProgress);
+    Serial.printf("OTA Progress: %d%%\n", otaProgress);
+  }
+  
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleOTAComplete() {
+  setCORS();
+  StaticJsonDocument<128> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+  
+  bool success = true;
+  if (!error && doc.containsKey("success")) {
+    success = doc["success"];
+  }
+  
+  otaInProgress = false;
+  otaProgress = success ? 100 : 0;
+  otaStatus = success ? "Complete!" : "Failed";
+  otaError = !success;
+  
+  saveOTAStatus(success);
+  if (success) {
+    clearOTAStatus();  // Clear after successful update
+  }
+  
+  showOTAStatus(success ? "Complete!" : "Failed", success ? 100 : -1, !success);
+  Serial.println(success ? "OTA Update Complete!" : "OTA Update Failed!");
+  
+  StaticJsonDocument<64> resp;
+  resp["success"] = true;
+  String response;
+  serializeJson(resp, response);
+  server.send(200, "application/json", response);
+  
+  if (success) {
+    delay(2000);
+  } else {
+    delay(3000);
+  }
 }
 
 // ============ CORS ============
@@ -808,6 +982,35 @@ void setup() {
   // Init Display
   initDisplay();
   
+  // Check for OTA rollback
+  if (checkOTARollback()) {
+    Serial.println("Previous OTA update failed - rollback mode");
+    clearOTAStatus();
+    
+    // Show rollback message on display
+    #if DISPLAY_TYPE == 2
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("OTA Failed!");
+    display.println();
+    display.println("Rollback...");
+    display.println("Previous");
+    display.println("version");
+    display.println("restored.");
+    display.display();
+    delay(3000);
+    #elif DISPLAY_TYPE == 1
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("OTA Failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("Rollback...");
+    delay(3000);
+    #endif
+  }
+  
   // Load WiFi settings from EEPROM
   loadWiFiSettings();
   
@@ -897,6 +1100,16 @@ void setup() {
   server.on("/api/wifi/scan", HTTP_GET, handleWiFiScan);
   server.on("/api/wifi/save", HTTP_POST, handleWiFiSave);
   
+  // OTA update
+  httpUpdater.setup(&server, "/update", otaUsername, otaPassword);
+  server.on("/update", HTTP_OPTIONS, handleOptions);
+  
+  // OTA status API endpoints
+  server.on("/api/ota/status", HTTP_GET, handleOTAStatus);
+  server.on("/api/ota/prepare", HTTP_POST, handleOTAPrepare);
+  server.on("/api/ota/progress", HTTP_POST, handleOTAProgress);
+  server.on("/api/ota/complete", HTTP_POST, handleOTAComplete);
+  
   server.onNotFound(handleNotFound);
   
   // CORS preflight
@@ -909,7 +1122,12 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  updateDisplay();
+  
+  // Skip normal display updates during OTA
+  if (!otaInProgress) {
+    updateDisplay();
+  }
+  
   checkWiFiConnection();
   delay(2);
 }
